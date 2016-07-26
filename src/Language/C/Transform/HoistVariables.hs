@@ -167,7 +167,7 @@ processStmt :: CStat -> Env CStat
 processStmt (CCompound labels items ni) = do
   items' <- scope (everywhereM' process items)
   return $ CCompound labels (filter (not . emptyExprStmt) items') ni
-processStmt (CFor first cond step stmt ni) = do
+processStmt (CFor first cond step stmt ni) = scope $ do
   first' <- case first of
     (Right decl) -> do
       exprs <- hoistDecl decl
