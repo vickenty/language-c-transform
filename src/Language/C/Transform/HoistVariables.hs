@@ -1,4 +1,3 @@
-{-# LANGUAGE RankNTypes #-}
 -- |
 -- Module: Language.C.Transform.HoistVariables
 -- Description: Move variable declarations to the top of the function
@@ -21,6 +20,7 @@ data EnvData = EnvData
     , toDeclare :: [CDecl]
     , namesUsed :: Set.Set String
     , codeBegan :: Bool
+    , noRecurse :: Bool
     }
 
 type Env = State EnvData
@@ -31,6 +31,7 @@ initEnv globals = EnvData
   , toDeclare = []
   , namesUsed = Set.fromList globals
   , codeBegan = False
+  , noRecurse = False
   }
 
 declToIdent :: CDecl -> Maybe Ident
@@ -38,21 +39,41 @@ declToIdent (CDecl _ [(Just (CDeclr mident _ _ _ _), _, _)] _) = mident
 declToIdent (CDecl _ [] _) = Nothing
 declToIdent decl = error ("compound declarations are not supported: " ++ (show decl))
 
-addDecl :: CDecl -> Bool -> Env String
+addDecl :: CDecl -> Bool -> Env [Ident]
 addDecl decl rename = do
-  let mname = fmap identToString $ declToIdent decl
-  case mname of
-    Just name -> do
-      name' <- if rename
-               then renameIdent name ""
-               else return name
-      let decl' = renameDecl name' decl
-      modify $ \st -> st { toDeclare = (toDeclare st) ++ [ decl' ]
-                         , renameMap = Map.insert name name' (renameMap st)
-                         , namesUsed = Set.insert name' (namesUsed st)
-                         }
-      return name'
-    Nothing -> return ""
+  decl' <- renameDecl decl rename
+  let names = everything (++) (mkQ [] declrName) decl'
+  modify $ \st -> st { toDeclare = (toDeclare st) ++ [ decl' ]
+                     , namesUsed = foldr Set.insert (namesUsed st) names
+                     }
+  return $ map internalIdent names
+
+declrName :: CDeclr -> [String]
+declrName (CDeclr (Just ident) _ _ _ _) = [identToString ident]
+declrName (CDeclr Nothing _ _ _ _) = error "unnamed declarators are not supported"
+
+renameDecl :: CDecl -> Bool -> Env CDecl
+renameDecl (CDecl specs items _) rename = do
+  items' <- mapM (renameItem rename) items
+  return $ CDecl specs items' undefNode
+
+renameItem :: Bool
+           -> (Maybe CDeclr, Maybe CInit, Maybe CExpr)
+           -> Env (Maybe CDeclr, Maybe CInit, Maybe CExpr)
+renameItem rename (Just declr, initr, expr) = do
+  declr' <- renameDeclr rename declr
+  return (Just declr', initr, expr)
+renameItem _ item@(Nothing, _, _) = return item
+
+renameDeclr :: Bool -> CDeclr -> Env CDeclr
+renameDeclr False declr = return declr
+renameDeclr True (CDeclr Nothing _ _ _ _)
+  = error "unnamed declarators are not supported"
+renameDeclr True (CDeclr (Just ident) derived literal attrs _) = do
+  let name = identToString ident
+  name' <- renameIdent name ""
+  modify $ \st -> st { renameMap = Map.insert name name' (renameMap st) }
+  return $ CDeclr (Just (internalIdent name')) derived literal attrs undefNode
 
 renameIdent :: String -> String -> Env String
 renameIdent name suffix = do
@@ -64,16 +85,6 @@ renameIdent name suffix = do
   where
     next "" = "2"
     next s = show (1 + (read s::Int))
-
-renameDecl :: String -> CDecl -> CDecl
-renameDecl name (CDecl spec [(declr, initr, expr)] ni) =
-  let declr' = fmap (renameDeclr name) declr in
-  CDecl spec [(declr', initr, expr)] ni
-renameDecl _ _ = error "multiple declarations are not supported yet"
-
-renameDeclr :: String -> CDeclr -> CDeclr
-renameDeclr name (CDeclr _ derived literal attr ni) =
-  CDeclr (Just (internalIdent name)) derived literal attr ni
 
 scope :: Env a -> Env a
 scope env = do
@@ -120,7 +131,7 @@ hoistVariables :: CFunDef -> [String] -> CFunDef
 hoistVariables (CFunDef declspec declr decls body _) globals =
   let args = funDeclrNames declr
       env = initEnv (globals ++ args)
-      (body', env') = runState (everywhereM' process body) env
+      (body', env') = runState (process body) env
       declstmt = map CBlockDecl (toDeclare env')
   in
     CFunDef declspec declr decls (prependItems body' declstmt) undefNode
@@ -142,8 +153,16 @@ derivedDeclrName (CFunDeclr (Right (decls, _)) _ _) =
   map identToString $ concat $ map (maybeToList . declToIdent) decls
 derivedDeclrName _ = []
 
-process :: Typeable a => a -> Env a
-process = return `extM` processItem `extM` processStmt `extM` processExpr
+process :: Data a => a -> Env a
+process x = do
+  x' <- processAny x
+  nr <- gets noRecurse
+  modify $ \st -> st { noRecurse = False }
+  if nr
+    then return x'
+    else gmapM process x'
+  where
+    processAny = return `extM` processItem `extM` processStmt `extM` processExpr
 
 processItem :: CBlockItem -> Env CBlockItem
 processItem (CBlockDecl decl) = do
@@ -151,6 +170,7 @@ processItem (CBlockDecl decl) = do
   if started
     then do
     initlist <- hoistDecl decl
+    modify $ \st -> st { noRecurse = True }
     return $ case initlist of
       [] -> CBlockStmt (CExpr Nothing undefNode)
       [ one ] -> CBlockStmt (CExpr (Just one) undefNode)
@@ -165,7 +185,7 @@ processItem (CNestedFunDef _) = error "nested functions are not supported"
 
 processStmt :: CStat -> Env CStat
 processStmt (CCompound labels items ni) = do
-  items' <- scope (everywhereM' process items)
+  items' <- scope (process items)
   return $ CCompound labels (filter (not . emptyExprStmt) items') ni
 processStmt (CFor first cond step stmt ni) = scope $ do
   first' <- case first of
@@ -175,7 +195,11 @@ processStmt (CFor first cond step stmt ni) = scope $ do
         [] -> Left Nothing
         xs -> Left (Just (CComma xs undefNode))
     expr -> return expr
-  return $ CFor first' cond step stmt ni
+  cond' <- process cond
+  step' <- process step
+  stmt' <- process stmt
+  modify $ \st -> st { noRecurse = True }
+  return $ CFor first' cond' step' stmt' ni
 processStmt s = return s
 
 processExpr :: CExpr -> Env CExpr
@@ -192,22 +216,32 @@ emptyExprStmt :: CBlockItem -> Bool
 emptyExprStmt (CBlockStmt (CExpr Nothing _)) = True
 emptyExprStmt _ = False
 
--- hoist declarations, returing a list of initializer expressions.
+-- Hoist declarations, returing a list of initializer expressions.
 hoistDecl :: CDecl -> Env [CExpr]
-hoistDecl (CDecl spec declrlist _) = do
-  names' <- mapM (\d -> addDecl d True) [CDecl spec [(declr, Nothing, Nothing)] undefNode | (declr, _, Nothing) <- declrlist]
-  declr' <- mapM declrToExpr (zip names' declrlist)
-  return $ concat declr'
+hoistDecl decl = do
+    initrs <- mapM hoistDeclr (splitDecl decl)
+    return $ catMaybes initrs
 
-declrToExpr :: (String, (Maybe CDeclr, Maybe CInit, Maybe CExpr)) -> Env [CExpr]
-declrToExpr (_, (_, Nothing, Nothing)) = return []
-declrToExpr (name, (Just (CDeclr _ _ _ _ _), Just (CInitExpr expr _), Nothing)) = do
-  let ident = internalIdent name
-  return [CAssign CAssignOp (CVar ident undefNode) expr undefNode]
-declrToExpr _ = error "unsupported initializer"
+hoistDeclr :: (CDecl, Maybe CExpr) -> Env (Maybe CExpr)
+hoistDeclr (decl, mexpr) = do
+  ident <- addDecl decl True
+  mexpr' <- process mexpr
+  case ident of
+    [ident'] -> return $ fmap (assignTo ident') mexpr'
+    _ -> error "addDecl returned multiple identifiers"
 
--- top-down variant of everywhereM, similar to everywhere'
-everywhereM' :: Monad m => GenericM m -> GenericM m
-everywhereM' f x = do
-  x' <- f x
-  gmapM (everywhereM' f) x'
+splitDecl :: CDecl -> [(CDecl, Maybe CExpr)]
+splitDecl (CDecl specs items _) = map (splitDeclItem specs) items
+
+splitDeclItem :: [CDeclSpec]
+              -> (Maybe CDeclr, Maybe CInit, Maybe CExpr)
+              -> (CDecl, Maybe CExpr)
+splitDeclItem specs (mdeclr, Nothing, Nothing)
+  = (CDecl specs [(mdeclr, Nothing, Nothing)] undefNode, Nothing)
+splitDeclItem specs (mdeclr, Just (CInitExpr expr _), Nothing)
+  = (CDecl specs [(mdeclr, Nothing, Nothing)] undefNode, Just expr)
+splitDeclItem _ (_, _, Nothing) = error "unsupported initializer"
+splitDeclItem _ (_, _, Just _) = error "unexpected AST structure"
+
+assignTo :: Ident -> CExpr -> CExpr
+assignTo ident expr = CAssign CAssignOp (CVar ident undefNode) expr undefNode
