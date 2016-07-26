@@ -240,7 +240,10 @@ splitDeclItem specs (mdeclr, Nothing, Nothing)
   = (CDecl specs [(mdeclr, Nothing, Nothing)] undefNode, Nothing)
 splitDeclItem specs (mdeclr, Just (CInitExpr expr _), Nothing)
   = (CDecl specs [(mdeclr, Nothing, Nothing)] undefNode, Just expr)
-splitDeclItem _ (_, _, Nothing) = error "unsupported initializer"
+splitDeclItem specs (mdeclr, Just (CInitList list _), Nothing)
+  = (CDecl specs [(mdeclr, Nothing, Nothing)] undefNode,
+     Just (CCompoundLit (CDecl specs [(Nothing, Nothing, Nothing)] undefNode) list undefNode))
+
 splitDeclItem _ (_, _, Just _) = error "unexpected AST structure"
 
 assignTo :: Ident -> CExpr -> CExpr
