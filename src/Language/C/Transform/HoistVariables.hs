@@ -153,16 +153,20 @@ derivedDeclrName (CFunDeclr (Right (decls, _)) _ _) =
   map identToString $ concat $ map (maybeToList . declToIdent) decls
 derivedDeclrName _ = []
 
-process :: Data a => a -> Env a
-process x = do
-  x' <- processAny x
-  nr <- gets noRecurse
-  modify $ \st -> st { noRecurse = False }
-  if nr
-    then return x'
-    else gmapM process x'
-  where
-    processAny = return `extM` processItem `extM` processStmt `extM` processExpr
+processAny :: Data a => a -> Env a
+processAny = return `extM` processItem `extM` processStmt `extM` processExpr
+
+process :: (Data a, Typeable a) => a -> Env a
+process x =
+  if typeOf x == typeOf undefNode || typeOf x == typeOf "" || typeOf x == typeOf (1::Int)
+  then return x
+  else do
+    x' <- processAny x
+    nr <- gets noRecurse
+    modify $ \st -> st { noRecurse = False }
+    if nr
+      then return x'
+      else gmapM process x'
 
 processItem :: CBlockItem -> Env CBlockItem
 processItem (CBlockDecl decl) = do
