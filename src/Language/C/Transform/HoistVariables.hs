@@ -34,42 +34,45 @@ initEnv globals = EnvData
   , noRecurse = False
   }
 
-declToIdent :: CDecl -> Maybe Ident
-declToIdent (CDecl _ [(Just (CDeclr mident _ _ _ _), _, _)] _) = mident
-declToIdent (CDecl _ [] _) = Nothing
-declToIdent decl = error ("compound declarations are not supported: " ++ (show decl))
-
 addDecl :: CDecl -> Bool -> Env [Ident]
 addDecl decl rename = do
-  decl' <- renameDecl decl rename
-  let names = everything (++) (mkQ [] declrName) decl'
+  decl' <- if rename
+            then renameDecl decl
+            else return decl
+  let idents = declIdents decl'
+  let names = map identToString idents
   modify $ \st -> st { toDeclare = (toDeclare st) ++ [ decl' ]
                      , namesUsed = foldr Set.insert (namesUsed st) names
                      }
-  return $ map internalIdent names
+  return idents
 
-declrName :: CDeclr -> [String]
-declrName (CDeclr (Just ident) _ _ _ _) = [identToString ident]
-declrName (CDeclr Nothing _ _ _ _) = error "unnamed declarators are not supported"
+declIdents :: CDecl -> [Ident]
+declIdents (CDecl _ items _) = map itemIdent items
 
-renameDecl :: CDecl -> Bool -> Env CDecl
-renameDecl (CDecl specs items _) rename = do
-  items' <- mapM (renameItem rename) items
+itemIdent :: (Maybe CDeclr, Maybe CInit, Maybe CExpr) -> Ident
+itemIdent (Just declr, _, _) = declrIdent declr
+itemIdent item@(Nothing, _, _) = error ("declaration item without declarator: " ++ (show item))
+
+declrIdent :: CDeclr -> Ident
+declrIdent (CDeclr (Just ident) _ _ _ _) = ident
+declrIdent decl = error ("unnamed declarators are not supported: " ++ (show decl))
+
+renameDecl :: CDecl -> Env CDecl
+renameDecl (CDecl specs items _) = do
+  items' <- mapM renameItem items
   return $ CDecl specs items' undefNode
 
-renameItem :: Bool
-           -> (Maybe CDeclr, Maybe CInit, Maybe CExpr)
+renameItem :: (Maybe CDeclr, Maybe CInit, Maybe CExpr)
            -> Env (Maybe CDeclr, Maybe CInit, Maybe CExpr)
-renameItem rename (Just declr, initr, expr) = do
-  declr' <- renameDeclr rename declr
+renameItem (Just declr, initr, expr) = do
+  declr' <- renameDeclr declr
   return (Just declr', initr, expr)
-renameItem _ item@(Nothing, _, _) = return item
+renameItem item@(Nothing, _, _) = return item
 
-renameDeclr :: Bool -> CDeclr -> Env CDeclr
-renameDeclr False declr = return declr
-renameDeclr True (CDeclr Nothing _ _ _ _)
+renameDeclr :: CDeclr -> Env CDeclr
+renameDeclr (CDeclr Nothing _ _ _ _)
   = error "unnamed declarators are not supported"
-renameDeclr True (CDeclr (Just ident) derived literal attrs _) = do
+renameDeclr (CDeclr (Just ident) derived literal attrs _) = do
   let name = identToString ident
   name' <- renameIdent name ""
   modify $ \st -> st { renameMap = Map.insert name name' (renameMap st) }
@@ -150,7 +153,7 @@ funDeclrParamNames declrlist = concat $ map derivedDeclrName declrlist
 derivedDeclrName :: CDerivedDeclr -> [String]
 derivedDeclrName (CFunDeclr (Left idents) _ _) = map identToString idents
 derivedDeclrName (CFunDeclr (Right (decls, _)) _ _) =
-  map identToString $ concat $ map (maybeToList . declToIdent) decls
+  map identToString $ concat $ map declIdents decls
 derivedDeclrName _ = []
 
 processAny :: Data a => a -> Env a
@@ -232,7 +235,7 @@ hoistDeclr (decl, mexpr) = do
   mexpr' <- process mexpr
   case ident of
     [ident'] -> return $ fmap (assignTo ident') mexpr'
-    _ -> error "addDecl returned multiple identifiers"
+    idents -> error $ "addDecl returned multiple identifiers: " ++ (show decl) ++ "\n" ++ (show idents)
 
 splitDecl :: CDecl -> [(CDecl, Maybe CExpr)]
 splitDecl (CDecl specs items _) = map (splitDeclItem specs) items
