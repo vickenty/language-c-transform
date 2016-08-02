@@ -247,11 +247,28 @@ splitDeclItem specs (mdeclr, Nothing, Nothing)
   = (CDecl specs [(mdeclr, Nothing, Nothing)] undefNode, Nothing)
 splitDeclItem specs (mdeclr, Just (CInitExpr expr _), Nothing)
   = (CDecl specs [(mdeclr, Nothing, Nothing)] undefNode, Just expr)
-splitDeclItem specs (mdeclr, Just (CInitList list _), Nothing)
-  = (CDecl specs [(mdeclr, Nothing, Nothing)] undefNode,
-     Just (CCompoundLit (CDecl specs [(Nothing, Nothing, Nothing)] undefNode) list undefNode))
+splitDeclItem specs (Just declr, Just (CInitList list _), Nothing)
+  = if isArrayDeclr declr
+    then splitArrayItem specs declr list
+    else splitStructItem specs declr list
+splitDeclItem _ (_, _, _) = error "unexpected AST structure"
 
-splitDeclItem _ (_, _, Just _) = error "unexpected AST structure"
+isArrayDeclr :: CDeclr -> Bool
+isArrayDeclr (CDeclr _ derive _ _ _) = any isArrayDerivedDeclr derive
+
+isArrayDerivedDeclr :: CDerivedDeclr -> Bool
+isArrayDerivedDeclr (CArrDeclr _ _ _) = True
+isArrayDerivedDeclr _ = False
+
+splitArrayItem :: [CDeclSpec] -> CDeclr -> CInitList -> (CDecl, Maybe CExpr)
+splitArrayItem _specs declr _list
+  = error ("array list initializers are not supported: " ++ (show $ pretty declr))
+
+splitStructItem :: [CDeclSpec] -> CDeclr -> CInitList -> (CDecl, Maybe CExpr)
+splitStructItem specs declr list
+  = (CDecl specs [(Just declr, Nothing, Nothing)] undefNode,
+     Just (CCompoundLit (CDecl specs [(Nothing, Nothing, Nothing)] undefNode)
+           list undefNode))
 
 assignTo :: Ident -> CExpr -> CExpr
 assignTo ident expr = CAssign CAssignOp (CVar ident undefNode) expr undefNode
