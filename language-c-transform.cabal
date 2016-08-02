@@ -22,7 +22,7 @@ library
                      , mtl >= 2.2 && < 2.3
                      , containers >= 0.5 && < 0.6
                      , syb >= 0.6 && < 0.7
-  ghc-options:         -Wall -Werror
+  ghc-options:         -Wall -O2
   default-language:    Haskell2010
 
 executable ctrans
@@ -35,7 +35,7 @@ executable ctrans
                      , containers >= 0.5 && < 0.6
                      , syb >= 0.6 && < 0.7
   hs-source-dirs:      src
-  ghc-options:         -Wall -Werror
+  ghc-options:         -Wall -O2
   default-language:    Haskell2010
 
 test-suite language-c-transform-tests
@@ -45,7 +45,7 @@ test-suite language-c-transform-tests
   build-depends:       base
                      , language-c >= 0.5 && < 0.6
                      , langauge-c-transform
-  ghc-options:         -Wall -Werror
+  ghc-options:         -Wall -O2
   default-language:    Haskell2010
 
 source-repository head
