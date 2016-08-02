@@ -156,7 +156,7 @@ derivedDeclrName _ = []
 processAny :: Data a => a -> Env a
 processAny = return `extM` processItem `extM` processStmt `extM` processExpr
 
-process :: (Data a, Typeable a) => a -> Env a
+process :: Data a => a -> Env a
 process x =
   if typeOf x == typeOf undefNode || typeOf x == typeOf "" || typeOf x == typeOf (1::Int)
   then return x
